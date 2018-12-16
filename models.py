@@ -1,11 +1,12 @@
 import warnings
 import numpy as np
 
+from keras.callbacks import EarlyStopping
 from keras.layers import LSTM, Dense, TimeDistributed
 from keras.metrics import MSE
 from keras.models import Sequential
 
-from seq2seq.models import Seq2Seq
+from seq2seq.models import SimpleSeq2Seq
 
 from build_data import SplitData
 
@@ -68,41 +69,55 @@ class SimpleLSTMAnomalyDetection(SplitData):
 
 
 class LSTMEncoderDecoderAnomalyDetection(object):
-    def __init__(self, series_size, feature_size, hidden_dimensions, depth=1, epochs=10):
+    def __init__(self, series_size, feature_size, hidden_dimensions, depth=1, epochs=10, modified_output_size=None):
         self.series_size = series_size
         self.feature_size = feature_size
         self.hidden_dimensions = hidden_dimensions
         self.depth = depth
         self.epochs = epochs
+        self.modified_output_size = modified_output_size
 
-    def build_model(self):
-        return Seq2Seq(input_dim=self.feature_size,
-                       output_dim=self.feature_size,
-                       input_length=self.series_size,
-                       output_length=self.series_size,
-                       hidden_dim=self.hidden_dimensions,
-                       depth=self.depth)
+    def build_model(self, **kwargs):
+        return SimpleSeq2Seq(input_dim=self.feature_size,
+                             output_dim=self.feature_size,
+                             input_length=None,
+                             output_length=self.series_size if not kwargs else kwargs['output_size'],
+                             hidden_dim=self.hidden_dimensions,
+                             depth=self.depth)
 
     def train_model(self, x):
         _model = self.build_model()
         _model.compile(optimizer='adam', loss='mse', metrics=['mse'])
-        x_train, x_validate, x_test = SplitData(x=x).split_data()
-        _model.fit(x=x_train, y=x_train, epochs=self.epochs, batch_size=4, shuffle=True)
 
-    def early_stopping(self):
-        pass
+        x_train, x_validate = SplitData(x=x).split_data()
+
+        es = EarlyStopping(monitor='val_loss',
+                           min_delta=0,
+                           patience=2,
+                           restore_best_weights=True)
+        _model.fit(x=x_train,
+                   y=x_train,
+                   epochs=self.epochs,
+                   batch_size=4,
+                   shuffle=True,
+                   callbacks=[es],
+                   validation_data=(x_validate, x_validate))
+
+        model_output_decoder_updated = self.build_model(output_size=100)
+        model_output_decoder_updated.set_weights(weights=_model.get_weights())
+
+        return model_output_decoder_updated
 
     def predict_anomalies(self):
         pass
 
 
 if __name__ == '__main__':
-    # Testing simple anomaly detection
-    # cls_ = SimpleLSTMAnomalyDetection
-    # model = cls_.build_model(10, 20, 10, 10, 20, hidden_size=20)
-    # model.fit(x=np.random.rand(1, 20, 10), y=np.random.rand(1, 20, 20), epochs=10, verbose=0)
-    # y = model.predict(x=np.random.rand(1, 1, 10))
-
-    # Testing encoder decoder model
-    LSTMEncoderDecoderAnomalyDetection(10, 1, 10, 2).train_model(np.random.rand(20, 10, 1))
-
+    encdec_obj = LSTMEncoderDecoderAnomalyDetection(series_size=50,
+                                                    feature_size=1,
+                                                    hidden_dimensions=10,
+                                                    depth=1,
+                                                    epochs=5,
+                                                    modified_output_size=100)
+    model = encdec_obj.train_model(np.random.rand(20, 100, 1))
+    print(model.predict(x=np.random.rand(1, 40, 1)).shape)
