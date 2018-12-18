@@ -3,10 +3,10 @@ import numpy as np
 
 from keras.callbacks import EarlyStopping
 from keras.layers import LSTM, Dense, TimeDistributed
-from keras.metrics import MSE
+from keras.metrics import MSE, MAE
 from keras.models import Sequential
 
-from seq2seq.models import SimpleSeq2Seq
+from seq2seq.models import SimpleSeq2Seq, Seq2Seq
 
 from build_data import SplitData
 
@@ -69,31 +69,40 @@ class SimpleLSTMAnomalyDetection(SplitData):
 
 
 class LSTMEncoderDecoderAnomalyDetection(object):
-    def __init__(self, series_size, feature_size, hidden_dimensions, depth=1, epochs=10, modified_output_size=None):
+    def __init__(self,
+                 series_size,
+                 feature_size,
+                 hidden_dimensions,
+                 depth=1,
+                 epochs=10,
+                 modified_output_size=None,
+                 dropout=0.3):
         self.series_size = series_size
         self.feature_size = feature_size
         self.hidden_dimensions = hidden_dimensions
         self.depth = depth
         self.epochs = epochs
         self.modified_output_size = modified_output_size
+        self.dropout = dropout
 
     def build_model(self, **kwargs):
-        return SimpleSeq2Seq(input_dim=self.feature_size,
-                             output_dim=self.feature_size,
-                             input_length=None,
-                             output_length=self.series_size if not kwargs else kwargs['output_size'],
-                             hidden_dim=self.hidden_dimensions,
-                             depth=self.depth)
+        return Seq2Seq(output_dim=self.feature_size if not kwargs else kwargs['output_size'],
+                       input_dim=self.feature_size,
+                       input_length=None,
+                       output_length=self.series_size,
+                       hidden_dim=self.hidden_dimensions,
+                       depth=self.depth,
+                       dropout=self.dropout)
 
     def train_model(self, x):
         _model = self.build_model()
         _model.compile(optimizer='adam', loss='mse', metrics=['mse'])
 
-        x_train, x_validate = SplitData(x=x).split_data()
+        x_train, x_validate, x_test = SplitData(x=x, split_ratios=(0.7, 0.2)).split_data()
 
         es = EarlyStopping(monitor='val_loss',
                            min_delta=0,
-                           patience=2,
+                           patience=10,
                            restore_best_weights=True)
         _model.fit(x=x_train,
                    y=x_train,
@@ -103,21 +112,49 @@ class LSTMEncoderDecoderAnomalyDetection(object):
                    callbacks=[es],
                    validation_data=(x_validate, x_validate))
 
-        model_output_decoder_updated = self.build_model(output_size=100)
+        model_output_decoder_updated = self.build_model(output_size=self.modified_output_size)
         model_output_decoder_updated.set_weights(weights=_model.get_weights())
 
         return model_output_decoder_updated
 
-    def predict_anomalies(self):
-        pass
+
+class ModelMultiVariateGaussian(object):
+    def __init__(self, prediction, actual):
+        self.prediction = prediction
+        self.actual = actual
+
+    def estimate_errors(self):
+        return np.array(self.prediction)-np.array(self.actual)
+
+    def export_mean_covariance(self):
+        errors = self.estimate_errors()
+        return errors, np.mean(errors), np.cov(errors)
+
+    def return_anomaly_scores(self):
+        errors, mean_, covariance = self.export_mean_covariance()
+        anomaly_score = np.dot(np.dot((errors-mean_).T, covariance), (errors-mean_))
+        return anomaly_score
 
 
 if __name__ == '__main__':
-    encdec_obj = LSTMEncoderDecoderAnomalyDetection(series_size=50,
-                                                    feature_size=1,
-                                                    hidden_dimensions=10,
+    from matplotlib import pyplot as plt
+
+    encdec_obj = LSTMEncoderDecoderAnomalyDetection(dropout=0.2,
+                                                    series_size=1,
+                                                    feature_size=100,
+                                                    hidden_dimensions=20,
                                                     depth=1,
-                                                    epochs=5,
+                                                    epochs=200,
                                                     modified_output_size=100)
-    model = encdec_obj.train_model(np.random.rand(20, 100, 1))
-    print(model.predict(x=np.random.rand(1, 40, 1)).shape)
+    arr = np.random.rand(100, 1, 100)
+    model = encdec_obj.train_model(arr)
+
+    arr_test = arr[-20:].reshape(20, 100)
+    pred = model.predict(x=arr_test.reshape(20, 1, 100)).reshape(20, 100)
+
+    # plt.plot(arr[-1].reshape(100, 1))
+    # plt.plot(pred)
+    # plt.show()
+
+    cls_fit = ModelMultiVariateGaussian(pred, arr_test).return_anomaly_scores()
+    print(cls_fit.shape)
