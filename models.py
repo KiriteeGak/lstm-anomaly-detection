@@ -3,10 +3,10 @@ import numpy as np
 
 from keras.callbacks import EarlyStopping
 from keras.layers import LSTM, Dense, TimeDistributed
-from keras.metrics import MSE, MAE
+from keras.metrics import MSE
 from keras.models import Sequential
 
-from seq2seq.models import SimpleSeq2Seq, Seq2Seq
+from seq2seq.models import Seq2Seq
 
 from build_data import SplitData
 
@@ -127,34 +127,31 @@ class ModelMultiVariateGaussian(object):
         return np.array(self.prediction)-np.array(self.actual)
 
     def export_mean_covariance(self):
-        errors = self.estimate_errors()
-        return errors, np.mean(errors), np.cov(errors)
+        errors = self.estimate_errors().flatten().reshape(1, 100)
+        return errors, np.mean(errors).reshape(1, 1), np.cov(errors).reshape(1, 1)
 
     def return_anomaly_scores(self):
-        errors, mean_, covariance = self.export_mean_covariance()
-        anomaly_score = np.dot(np.dot((errors-mean_).T, covariance), (errors-mean_))
+        errors, mean_, cov_ = self.export_mean_covariance()
+        anomaly_score = np.apply_along_axis(lambda err: np.dot(np.dot((err - mean_).T, np.linalg.inv(cov_)),
+                                                               (err - mean_)),
+                                            axis=0,
+                                            arr=errors)
         return anomaly_score
 
 
 if __name__ == '__main__':
-    from matplotlib import pyplot as plt
-
     encdec_obj = LSTMEncoderDecoderAnomalyDetection(dropout=0.2,
                                                     series_size=1,
                                                     feature_size=100,
                                                     hidden_dimensions=20,
                                                     depth=1,
-                                                    epochs=200,
+                                                    epochs=20,
                                                     modified_output_size=100)
     arr = np.random.rand(100, 1, 100)
     model = encdec_obj.train_model(arr)
 
-    arr_test = arr[-20:].reshape(20, 100)
-    pred = model.predict(x=arr_test.reshape(20, 1, 100)).reshape(20, 100)
+    arr_test = arr.reshape(20, 1, 100)
+    pred = model.predict(x=arr_test).reshape(20, 100)
 
-    # plt.plot(arr[-1].reshape(100, 1))
-    # plt.plot(pred)
-    # plt.show()
-
-    cls_fit = ModelMultiVariateGaussian(pred, arr_test).return_anomaly_scores()
+    cls_fit = ModelMultiVariateGaussian(pred, arr_test.reshape(20, 100)).return_anomaly_scores()
     print(cls_fit.shape)
