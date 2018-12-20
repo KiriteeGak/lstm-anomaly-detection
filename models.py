@@ -1,4 +1,7 @@
+from collections import Counter
+
 import warnings
+import matplotlib.pyplot as plt
 import numpy as np
 
 from keras.callbacks import EarlyStopping
@@ -122,36 +125,53 @@ class ModelMultiVariateGaussian(object):
     def __init__(self, prediction, actual):
         self.prediction = prediction
         self.actual = actual
+        self.features, self.no_values = self.actual.shape[1], self.actual.shape[0]
 
     def estimate_errors(self):
         return np.array(self.prediction)-np.array(self.actual)
 
     def export_mean_covariance(self):
-        errors = self.estimate_errors().flatten().reshape(1, 100)
+        errors = self.estimate_errors().flatten().reshape(1, self.no_values * self.features)
         return errors, np.mean(errors).reshape(1, 1), np.cov(errors).reshape(1, 1)
 
-    def return_anomaly_scores(self):
-        errors, mean_, cov_ = self.export_mean_covariance()
+    def return_anomaly_scores(self, mean_=None, cov_=None):
+        if not (mean_ and cov_):
+            errors, mean_, cov_ = self.export_mean_covariance()
+
         anomaly_score = np.apply_along_axis(lambda err: np.dot(np.dot((err - mean_).T, np.linalg.inv(cov_)),
                                                                (err - mean_)),
                                             axis=0,
                                             arr=errors)
-        return anomaly_score
+        return np.log(anomaly_score).reshape(1, self.no_values * self.features), mean_, cov_
 
 
 if __name__ == '__main__':
+    import pandas as pd
+    test_data = pd.read_csv("btc_price_test.csv")['price'].values
+    test_data[100:200].reshape(1, 100)
+
     encdec_obj = LSTMEncoderDecoderAnomalyDetection(dropout=0.2,
                                                     series_size=1,
                                                     feature_size=100,
                                                     hidden_dimensions=20,
                                                     depth=1,
-                                                    epochs=20,
+                                                    epochs=10,
                                                     modified_output_size=100)
-    arr = np.random.rand(100, 1, 100)
-    model = encdec_obj.train_model(arr)
 
-    arr_test = arr.reshape(20, 1, 100)
+    # Generate the random arrays and split to find mean and covariance matrices
+    arr = np.random.rand(100, 1, 100)
+    arr_test = arr[-20:].reshape(20, 1, 100)
+
+    # Train the model and predict
+    model = encdec_obj.train_model(arr)
     pred = model.predict(x=arr_test).reshape(20, 100)
 
-    cls_fit = ModelMultiVariateGaussian(pred, arr_test.reshape(20, 100)).return_anomaly_scores()
-    print(cls_fit.shape)
+    # Find the cls_fit, mean and variance of the fitted gaussian
+    cls_fit, m, var = ModelMultiVariateGaussian(pred, arr_test.reshape(20, 100)).return_anomaly_scores()
+
+    # Check whether transformed values follows an gaussian dist.
+    # digitised = np.digitize(cls_fit, np.arange(cls_fit.min(), cls_fit.max(), 0.5)).reshape(2000)
+    # counts = list(Counter(list(digitised)).values())
+    # bin_means = [cls_fit[digitised == i].mean() for i in range(1, 10)]
+    # plt.bar(np.arange(1, len(counts)+1), counts, width=1)
+    # plt.show()
