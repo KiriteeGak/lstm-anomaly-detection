@@ -1,7 +1,4 @@
-from collections import Counter
-
 import warnings
-import matplotlib.pyplot as plt
 import numpy as np
 
 from keras.callbacks import EarlyStopping
@@ -12,11 +9,15 @@ from keras.models import Sequential
 from seq2seq.models import Seq2Seq
 
 from build_data import SplitData
+from plotting_ import Plotting
 
 
 class SimpleLSTMAnomalyDetection(SplitData):
     @staticmethod
-    def build_model(feature_size, predict_timestamps, *args, hidden_size=10):
+    def build_model(feature_size,
+                    predict_timestamps,
+                    *args,
+                    hidden_size=10):
         model_ = Sequential()
 
         if args:
@@ -100,7 +101,6 @@ class LSTMEncoderDecoderAnomalyDetection(object):
     def train_model(self, x):
         _model = self.build_model()
         _model.compile(optimizer='adam', loss='mse', metrics=['mse'])
-
         x_train, x_validate, x_test = SplitData(x=x, split_ratios=(0.7, 0.2)).split_data()
 
         es = EarlyStopping(monitor='val_loss',
@@ -126,6 +126,9 @@ class ModelMultiVariateGaussian(object):
         self.prediction = prediction
         self.actual = actual
         self.features, self.no_values = self.actual.shape[1], self.actual.shape[0]
+        self.covariance = None
+        self.mean_values = None
+        self.anomaly_scores = None
 
     def estimate_errors(self):
         return np.array(self.prediction)-np.array(self.actual)
@@ -134,44 +137,74 @@ class ModelMultiVariateGaussian(object):
         errors = self.estimate_errors().flatten().reshape(1, self.no_values * self.features)
         return errors, np.mean(errors).reshape(1, 1), np.cov(errors).reshape(1, 1)
 
-    def return_anomaly_scores(self, mean_=None, cov_=None):
+    def return_anomaly_scores(self, mean_=None, cov_=None, mahalanobis=False):
         if not (mean_ and cov_):
             errors, mean_, cov_ = self.export_mean_covariance()
+        else:
+            raise ValueError("Damn")
+        if mahalanobis:
 
-        anomaly_score = np.apply_along_axis(lambda err: np.dot(np.dot((err - mean_).T, np.linalg.inv(cov_)),
-                                                               (err - mean_)),
-                                            axis=0,
-                                            arr=errors)
-        return np.log(anomaly_score).reshape(1, self.no_values * self.features), mean_, cov_
+            # Check whether the implementation is right. Blocked till then.
+            # Helpful: https://en.wikipedia.org/wiki/Multivariate_normal_distribution#Non-degenerate_case
+
+            anomaly_score = np.apply_along_axis(lambda err: np.dot(np.dot((err - mean_).T, np.linalg.inv(cov_)),
+                                                                   (err - mean_)),
+                                                axis=0,
+                                                arr=errors)
+        else:
+            anomaly_score = np.abs((errors-errors.mean())/errors.std())
+
+        self.anomaly_scores, self.mean_values, self.covariance =\
+            np.log(anomaly_score).reshape(1, self.no_values * self.features), mean_, cov_
+        return self.anomaly_scores, self.mean_values, self.covariance
+
+
+def import_sample_data():
+    import pandas as pd
+
+    # Load market data
+    data_loaded = pd.read_csv("data/market.csv")
+    data_loaded = data_loaded[data_loaded['e_date'] < '2017-07-17']
+
+    # Assuming they are of opening prices
+    data_loaded.fillna(method='bfill', inplace=True)
+    data_loaded.dropna(how='any', axis=0, inplace=True)
+    data_loaded_slice = data_loaded[data_loaded.columns.difference(['e_date'])].apply(pd.to_numeric)
+
+    data_loaded[data_loaded_slice.columns] = \
+        (data_loaded_slice - data_loaded_slice.min()) / (data_loaded_slice.max() - data_loaded_slice.min())
+
+    if False:
+        data_loaded[data_loaded_slice.columns] = data_loaded[data_loaded_slice.columns].diff()
+        data_loaded.dropna(how='any', axis=0, inplace=True)
+
+    return data_loaded[data_loaded_slice.columns.difference(['e_date', 'BITFINEX_SPOT_BTC_USD'])].values.T
 
 
 if __name__ == '__main__':
-    import pandas as pd
-    test_data = pd.read_csv("btc_price_test.csv")['price'].values
-    test_data[100:200].reshape(1, 100)
-
     encdec_obj = LSTMEncoderDecoderAnomalyDetection(dropout=0.2,
                                                     series_size=1,
-                                                    feature_size=100,
-                                                    hidden_dimensions=20,
+                                                    feature_size=1335,
+                                                    hidden_dimensions=100,
                                                     depth=1,
-                                                    epochs=10,
-                                                    modified_output_size=100)
+                                                    epochs=100,
+                                                    modified_output_size=1335)
 
     # Generate the random arrays and split to find mean and covariance matrices
-    arr = np.random.rand(100, 1, 100)
-    arr_test = arr[-20:].reshape(20, 1, 100)
+    data = import_sample_data().reshape(18, 1, 1335)
+    arr_test = data[-4:].reshape(4, 1, 1335)
 
     # Train the model and predict
-    model = encdec_obj.train_model(arr)
-    pred = model.predict(x=arr_test).reshape(20, 100)
+    model = encdec_obj.train_model(data)
+    pred = model.predict(x=arr_test).reshape(4, 1335)
 
     # Find the cls_fit, mean and variance of the fitted gaussian
-    cls_fit, m, var = ModelMultiVariateGaussian(pred, arr_test.reshape(20, 100)).return_anomaly_scores()
-
-    # Check whether transformed values follows an gaussian dist.
-    # digitised = np.digitize(cls_fit, np.arange(cls_fit.min(), cls_fit.max(), 0.5)).reshape(2000)
-    # counts = list(Counter(list(digitised)).values())
-    # bin_means = [cls_fit[digitised == i].mean() for i in range(1, 10)]
-    # plt.bar(np.arange(1, len(counts)+1), counts, width=1)
-    # plt.show()
+    cls_fit, m, var = ModelMultiVariateGaussian(pred,
+                                                arr_test.reshape(4, 1335)
+                                                ).return_anomaly_scores()
+    cls_fit = cls_fit.reshape(4, 1335)
+    Plotting.anomaly_bars(arr_test.reshape(4, 1335),
+                          pred,
+                          cls_fit,
+                          save=True,
+                          no_show=True)
