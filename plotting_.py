@@ -36,7 +36,6 @@ class Plotting(object):
             axarr[1].bar(x=range(0, len(a)), height=as_, label='anomaly score')
             axarr[1].legend()
             plt.legend(loc='upper right')
-            plt.show()
 
             if not no_show:
                 plt.show()
