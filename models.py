@@ -1,5 +1,6 @@
 import warnings
 import numpy as np
+import pandas as pd
 
 from keras.callbacks import EarlyStopping
 from keras.layers import LSTM, Dense, TimeDistributed
@@ -7,6 +8,7 @@ from keras.metrics import MSE
 from keras.models import Sequential
 
 from seq2seq.models import Seq2Seq
+from scipy.signal import medfilt
 
 from build_data import SplitData
 from plotting_ import Plotting
@@ -101,7 +103,7 @@ class LSTMEncoderDecoderAnomalyDetection(object):
     def train_model(self, x):
         _model = self.build_model()
         _model.compile(optimizer='adam', loss='mse', metrics=['mse'])
-        x_train, x_validate, x_test = SplitData(x=x, split_ratios=(0.7, 0.2)).split_data()
+        x_train, x_validate, x_test = SplitData(x=x, split_ratios=(0.6, 0.3)).split_data()
 
         es = EarlyStopping(monitor='val_loss',
                            min_delta=0,
@@ -122,28 +124,48 @@ class LSTMEncoderDecoderAnomalyDetection(object):
 
 
 class ModelMultiVariateGaussian(object):
-    def __init__(self, prediction, actual):
-        self.prediction = prediction
-        self.actual = actual
-        self.features, self.no_values = self.actual.shape[1], self.actual.shape[0]
+    def __init__(self, reconstruction_model=None):
         self.covariance = None
         self.mean_values = None
-        self.anomaly_scores = None
+        self.validation_anomaly_scores = None
+        self.reconstruction_model = reconstruction_model
+        self.smoothed_values = None
 
-    def estimate_errors(self):
-        return np.array(self.prediction)-np.array(self.actual)
+    @staticmethod
+    def estimate_errors(prediction, actual):
+        return np.array(prediction)-np.array(actual)
 
-    def export_mean_covariance(self):
-        errors = self.estimate_errors().flatten().reshape(1, self.no_values * self.features)
-        return errors, np.mean(errors).reshape(1, 1), np.cov(errors).reshape(1, 1)
+    def export_mean_covariance(self, predictions, actual, no_values, features):
+        errors = self.estimate_errors(predictions, actual).flatten().reshape(1, no_values * features)
+        return errors, np.mean(errors).reshape(1, 1), errors.std().reshape(1, 1)
 
-    def return_anomaly_scores(self, mean_=None, cov_=None, mahalanobis=False):
-        if not (mean_ and cov_):
-            errors, mean_, cov_ = self.export_mean_covariance()
+    @staticmethod
+    def zipped_isinstance(obj, instances):
+        for obj_, instances_ in zip(obj, instances):
+            if not isinstance(obj_, instances_):
+                return False
+        return True
+
+    def fit(self, predict=None, actual=None, mahalanobis=False, errors=None, mean_=None, cov_=None):
+        if isinstance(actual, np.ndarray) and not isinstance(predict, np.ndarray)\
+                and not predict and self.__class__.__name__ == 'MedianSmoothing':
+            predict = self.smoothed_values
+
+        if not self.zipped_isinstance((predict, actual), (np.ndarray, np.ndarray)) and \
+                not self.zipped_isinstance((errors, mean_, cov_), (np.ndarray, np.ndarray, np.ndarray)):
+            raise ValueError("Unable to find actual or predict values for fitting the gaussian")
+
+        if not self.zipped_isinstance((errors, mean_, cov_), (np.ndarray, np.ndarray, np.ndarray)):
+            features, no_values = actual.shape[1], actual.shape[0]
+
+            # This cov_ terms is really standard deviation.
+            # TODO: Need to rename, but lot to refactor
+
+            errors, mean_, cov_ = self.export_mean_covariance(predict, actual, no_values, features)
         else:
-            raise ValueError("Damn")
-        if mahalanobis:
+            features, no_values = errors.shape[-1], errors.shape[-2]
 
+        if mahalanobis:
             # Check whether the implementation is right. Blocked till then.
             # Helpful: https://en.wikipedia.org/wiki/Multivariate_normal_distribution#Non-degenerate_case
 
@@ -152,19 +174,45 @@ class ModelMultiVariateGaussian(object):
                                                 axis=0,
                                                 arr=errors)
         else:
-            anomaly_score = np.abs((errors-errors.mean())/errors.std())
+            anomaly_score = np.abs((errors-mean_)/cov_)
 
-        self.anomaly_scores, self.mean_values, self.covariance =\
-            np.log(anomaly_score).reshape(1, self.no_values * self.features), mean_, cov_
-        return self.anomaly_scores, self.mean_values, self.covariance
+        if self.zipped_isinstance((predict, actual), (np.ndarray, np.ndarray)):
+            self.validation_anomaly_scores, self.mean_values, self.covariance =\
+                np.log(anomaly_score.reshape(1, no_values * features)), mean_, cov_
+        else:
+            return np.log(anomaly_score.reshape(1, no_values * features))
+
+    def predict(self, actual):
+        if not self.reconstruction_model:
+            raise ValueError("Unable to find the model to reconstruct time series")
+
+        pred_ = self.reconstruction_model.predict(actual)
+        errors = self.estimate_errors(pred_, actual)
+        return self.fit(errors=errors, mean_=self.mean_values, cov_=self.covariance)
+
+
+class MedianSmoothing(ModelMultiVariateGaussian):
+    def __init__(self, data_, kernel_=59):
+        super().__init__(reconstruction_model=None)
+        self.data_ = data_
+        self.kernel_ = kernel_
+        self.smoothed_values = self._return_smoothed_curve()
+
+    def _return_smoothed_curve(self, data_addn=None):
+        if not isinstance(data_addn, np.ndarray) and not data_addn:
+            data_addn = self.data_
+        return np.array([medfilt(arr, kernel_size=self.kernel_) for arr in data_addn])
+
+    def predict(self, actual):
+        smoothed = self._return_smoothed_curve(data_addn=actual)
+        errors = self.estimate_errors(smoothed, actual)
+        return self.fit(errors=errors, mean_=self.mean_values, cov_=self.covariance)
 
 
 def import_sample_data():
-    import pandas as pd
-
     # Load market data
     data_loaded = pd.read_csv("data/market.csv")
-    data_loaded = data_loaded[data_loaded['e_date'] < '2017-07-17']
+    # data_loaded = data_loaded[data_loaded['e_date'] < '2017-07-17']
 
     # Assuming they are of opening prices
     data_loaded.fillna(method='bfill', inplace=True)
@@ -178,33 +226,83 @@ def import_sample_data():
         data_loaded[data_loaded_slice.columns] = data_loaded[data_loaded_slice.columns].diff()
         data_loaded.dropna(how='any', axis=0, inplace=True)
 
-    return data_loaded[data_loaded_slice.columns.difference(['e_date', 'BITFINEX_SPOT_BTC_USD'])].values.T
+    data_ = data_loaded[data_loaded_slice.columns.difference(['e_date', 'BITFINEX_SPOT_BTC_USD'])].values.T
+    dps_, length_ = np.shape(data_)
+    return data_, dps_, length_
+
+
+def get_btc_usd_price():
+    d = pd.read_csv("data/market.csv")['BITFINEX_SPOT_BTC_USD']
+    d.fillna(method='bfill', inplace=True)
+    d = d.values
+    return (d-d.min())/(d.max()-d.min())
 
 
 if __name__ == '__main__':
-    encdec_obj = LSTMEncoderDecoderAnomalyDetection(dropout=0.2,
-                                                    series_size=1,
-                                                    feature_size=1335,
-                                                    hidden_dimensions=100,
-                                                    depth=1,
-                                                    epochs=100,
-                                                    modified_output_size=1335)
+    data, dps, length = import_sample_data()
 
-    # Generate the random arrays and split to find mean and covariance matrices
-    data = import_sample_data().reshape(18, 1, 1335)
-    arr_test = data[-4:].reshape(4, 1, 1335)
+    # ======================== For LSTM based recognition ==============================
+    # data = data.reshape(dps, 1, length)
+    #
+    # encdec_obj = LSTMEncoderDecoderAnomalyDetection(dropout=0.2,
+    #                                                 series_size=1,
+    #                                                 feature_size=length,
+    #                                                 hidden_dimensions=10,
+    #                                                 depth=1,
+    #                                                 epochs=100,
+    #                                                 modified_output_size=length)
+    #
+    # # Generate the random arrays and split to find mean and covariance matrices
+    # arr_test = data[-5:].reshape(5, 1, length)
+    # btc_data = get_btc_usd_price().reshape(1, 1, length)
+    #
+    # # Train the model and predict
+    # model = encdec_obj.train_model(data)
+    # pred = model.predict(x=arr_test).reshape(5, length)
+    #
+    # # Fit the gaussian and predict
+    # gaussian_fit = ModelMultiVariateGaussian(reconstruction_model=model)
+    # gaussian_fit.fit(pred, arr_test.reshape(5, length))
 
-    # Train the model and predict
-    model = encdec_obj.train_model(data)
-    pred = model.predict(x=arr_test).reshape(4, 1335)
+    # Dumping validation graphs
+    # Plotting.anomaly_bars(arr_test.reshape(5, length),
+    #                       pred,
+    #                       gaussian_fit.validation_anomaly_scores.reshape(5, length),
+    #                       save=True,
+    #                       no_show=True,
+    #                       fig_name="validation_10_dims")
 
-    # Find the cls_fit, mean and variance of the fitted gaussian
-    cls_fit, m, var = ModelMultiVariateGaussian(pred,
-                                                arr_test.reshape(4, 1335)
-                                                ).return_anomaly_scores()
-    cls_fit = cls_fit.reshape(4, 1335)
-    Plotting.anomaly_bars(arr_test.reshape(4, 1335),
+    # ana = gaussian_fit.predict(actual=get_btc_usd_price().reshape(1, 1, length))
+
+    # Dumping test graphs
+    # Plotting.anomaly_bars(get_btc_usd_price().reshape(1, length),
+    #                       model.predict(btc_data).reshape(1, length),
+    #                       ana.reshape(1, length),
+    #                       save=True,
+    #                       no_show=True,
+    #                       fig_name="test_btc_10_dims")
+
+    # ======================== For Median smoothing thingy ==============================
+
+    x_train, x_validate, x_test = SplitData(x=data, split_ratios=(0.6, 0.3)).split_data()
+    model_ = MedianSmoothing(data_=x_train)
+
+    model_.fit(predict=None, actual=x_train)
+    pred = model_.predict(actual=x_validate).reshape(6, length)
+
+    # Dumping validation graphs
+    Plotting.anomaly_bars(x_validate.reshape(6, length),
+                          MedianSmoothing(data_=x_validate).smoothed_values,
                           pred,
-                          cls_fit,
                           save=True,
-                          no_show=True)
+                          no_show=True,
+                          fig_name="median_smoothing_test_60")
+
+    ana = model_.predict(get_btc_usd_price().reshape(1, length))
+
+    Plotting.anomaly_bars(get_btc_usd_price().reshape(1, length),
+                          MedianSmoothing(get_btc_usd_price().reshape(1, length)).smoothed_values,
+                          ana.reshape(1, length),
+                          save=True,
+                          no_show=True,
+                          fig_name="test_btc_median_smoothing_60")
