@@ -1,6 +1,5 @@
 import warnings
 import numpy as np
-import pandas as pd
 
 from keras.callbacks import EarlyStopping
 from keras.layers import LSTM, Dense, TimeDistributed
@@ -10,7 +9,7 @@ from keras.models import Sequential
 from seq2seq.models import Seq2Seq
 from scipy.signal import medfilt
 
-from build_data import SplitData
+from build_data import SplitData, import_sample_data, get_btc_usd_price
 from plotting_ import Plotting
 
 
@@ -209,37 +208,34 @@ class MedianSmoothing(ModelMultiVariateGaussian):
         return self.fit(errors=errors, mean_=self.mean_values, cov_=self.covariance)
 
 
-def import_sample_data():
-    # Load market data
-    data_loaded = pd.read_csv("data/market.csv")
-    # data_loaded = data_loaded[data_loaded['e_date'] < '2017-07-17']
-
-    # Assuming they are of opening prices
-    data_loaded.fillna(method='bfill', inplace=True)
-    data_loaded.dropna(how='any', axis=0, inplace=True)
-    data_loaded_slice = data_loaded[data_loaded.columns.difference(['e_date'])].apply(pd.to_numeric)
-
-    data_loaded[data_loaded_slice.columns] = \
-        (data_loaded_slice - data_loaded_slice.min()) / (data_loaded_slice.max() - data_loaded_slice.min())
-
-    if False:
-        data_loaded[data_loaded_slice.columns] = data_loaded[data_loaded_slice.columns].diff()
-        data_loaded.dropna(how='any', axis=0, inplace=True)
-
-    data_ = data_loaded[data_loaded_slice.columns.difference(['e_date', 'BITFINEX_SPOT_BTC_USD'])].values.T
-    dps_, length_ = np.shape(data_)
-    return data_, dps_, length_
-
-
-def get_btc_usd_price():
-    d = pd.read_csv("data/market.csv")['BITFINEX_SPOT_BTC_USD']
-    d.fillna(method='bfill', inplace=True)
-    d = d.values
-    return (d-d.min())/(d.max()-d.min())
-
-
 if __name__ == '__main__':
     data, dps, length = import_sample_data()
+
+    # ======================== For Median smoothing thingy ==============================
+    x_train, x_validate = SplitData(x=data, split_ratios=(0.7,)).split_data()
+    shape_x_validate = x_validate.shape[0]
+
+    model_ = MedianSmoothing(data_=x_train)
+    model_.fit(predict=None, actual=x_train)
+
+    pred = model_.predict(actual=x_validate).reshape(shape_x_validate, length)
+
+    # Dumping validation graphs
+    Plotting.anomaly_bars(x_validate.reshape(shape_x_validate, length),
+                          MedianSmoothing(data_=x_validate).smoothed_values,
+                          pred,
+                          save=True,
+                          no_show=True,
+                          fig_name="median_smoothing_test_60")
+
+    ana = model_.predict(get_btc_usd_price().reshape(1, length))
+
+    Plotting.anomaly_bars(get_btc_usd_price().reshape(1, length),
+                          MedianSmoothing(get_btc_usd_price().reshape(1, length)).smoothed_values,
+                          ana.reshape(1, length),
+                          save=True,
+                          no_show=True,
+                          fig_name="test_btc_median_smoothing_60")
 
     # ======================== For LSTM based recognition ==============================
     # data = data.reshape(dps, 1, length)
@@ -281,28 +277,3 @@ if __name__ == '__main__':
     #                       save=True,
     #                       no_show=True,
     #                       fig_name="test_btc_10_dims")
-
-    # ======================== For Median smoothing thingy ==============================
-
-    x_train, x_validate, x_test = SplitData(x=data, split_ratios=(0.6, 0.3)).split_data()
-    model_ = MedianSmoothing(data_=x_train)
-
-    model_.fit(predict=None, actual=x_train)
-    pred = model_.predict(actual=x_validate).reshape(6, length)
-
-    # Dumping validation graphs
-    Plotting.anomaly_bars(x_validate.reshape(6, length),
-                          MedianSmoothing(data_=x_validate).smoothed_values,
-                          pred,
-                          save=True,
-                          no_show=True,
-                          fig_name="median_smoothing_test_60")
-
-    ana = model_.predict(get_btc_usd_price().reshape(1, length))
-
-    Plotting.anomaly_bars(get_btc_usd_price().reshape(1, length),
-                          MedianSmoothing(get_btc_usd_price().reshape(1, length)).smoothed_values,
-                          ana.reshape(1, length),
-                          save=True,
-                          no_show=True,
-                          fig_name="test_btc_median_smoothing_60")
