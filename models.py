@@ -9,7 +9,7 @@ from keras.models import Sequential
 from seq2seq.models import Seq2Seq
 from scipy.signal import medfilt
 
-from build_data import SplitData, import_sample_data, get_btc_usd_price
+from build_data import SplitData, import_sample_data, get_btc_usd_price, load_crypto_pairings_data
 from plotting_ import Plotting
 
 
@@ -103,7 +103,6 @@ class LSTMEncoderDecoderAnomalyDetection(object):
         _model = self.build_model()
         _model.compile(optimizer='adam', loss='mse', metrics=['mse'])
         x_train, x_validate, x_test = SplitData(x=x, split_ratios=(0.6, 0.3)).split_data()
-
         es = EarlyStopping(monitor='val_loss',
                            min_delta=0,
                            patience=10,
@@ -129,6 +128,7 @@ class ModelMultiVariateGaussian(object):
         self.validation_anomaly_scores = None
         self.reconstruction_model = reconstruction_model
         self.smoothed_values = None
+        self.GaussianFitter = ModelMultiVariateGaussian
 
     @staticmethod
     def estimate_errors(prediction, actual):
@@ -209,68 +209,76 @@ class MedianSmoothing(ModelMultiVariateGaussian):
 
 
 if __name__ == '__main__':
-    data, dps, length = import_sample_data()
+    # data, dps, length = import_sample_data()
+    data, dps, length = load_crypto_pairings_data()
 
+    # ==================================================================================
     # ======================== For Median smoothing thingy ==============================
-    x_train, x_validate = SplitData(x=data, split_ratios=(0.7,)).split_data()
-    shape_x_validate = x_validate.shape[0]
+    # ==================================================================================
 
-    model_ = MedianSmoothing(data_=x_train)
-    model_.fit(predict=None, actual=x_train)
-
-    pred = model_.predict(actual=x_validate).reshape(shape_x_validate, length)
-
-    # Dumping validation graphs
-    Plotting.anomaly_bars(x_validate.reshape(shape_x_validate, length),
-                          MedianSmoothing(data_=x_validate).smoothed_values,
-                          pred,
-                          save=True,
-                          no_show=True,
-                          fig_name="median_smoothing_test_60")
-
-    ana = model_.predict(get_btc_usd_price().reshape(1, length))
-
-    Plotting.anomaly_bars(get_btc_usd_price().reshape(1, length),
-                          MedianSmoothing(get_btc_usd_price().reshape(1, length)).smoothed_values,
-                          ana.reshape(1, length),
-                          save=True,
-                          no_show=True,
-                          fig_name="test_btc_median_smoothing_60")
-
-    # ======================== For LSTM based recognition ==============================
-    # data = data.reshape(dps, 1, length)
+    # x_train, x_validate = SplitData(x=data, split_ratios=(0.7,)).split_data()
+    # shape_x_validate = x_validate.shape[0]
     #
-    # encdec_obj = LSTMEncoderDecoderAnomalyDetection(dropout=0.2,
-    #                                                 series_size=1,
-    #                                                 feature_size=length,
-    #                                                 hidden_dimensions=10,
-    #                                                 depth=1,
-    #                                                 epochs=100,
-    #                                                 modified_output_size=length)
+    # model_ = MedianSmoothing(data_=x_train)
+    # model_.fit(predict=None, actual=x_train)
     #
-    # # Generate the random arrays and split to find mean and covariance matrices
-    # arr_test = data[-5:].reshape(5, 1, length)
-    # btc_data = get_btc_usd_price().reshape(1, 1, length)
+    # pred = model_.predict(actual=x_validate).reshape(shape_x_validate, length)
     #
-    # # Train the model and predict
-    # model = encdec_obj.train_model(data)
-    # pred = model.predict(x=arr_test).reshape(5, length)
-    #
-    # # Fit the gaussian and predict
-    # gaussian_fit = ModelMultiVariateGaussian(reconstruction_model=model)
-    # gaussian_fit.fit(pred, arr_test.reshape(5, length))
-
-    # Dumping validation graphs
-    # Plotting.anomaly_bars(arr_test.reshape(5, length),
+    # # Dumping validation graphs
+    # Plotting.anomaly_bars(x_validate.reshape(shape_x_validate, length),
+    #                       MedianSmoothing(data_=x_validate).smoothed_values,
     #                       pred,
-    #                       gaussian_fit.validation_anomaly_scores.reshape(5, length),
     #                       save=True,
     #                       no_show=True,
-    #                       fig_name="validation_10_dims")
+    #                       fig_name="median_smoothing_test_60")
+    #
+    # ana = model_.predict(get_btc_usd_price().reshape(1, length))
+    #
+    # Plotting.anomaly_bars(get_btc_usd_price().reshape(1, length),
+    #                       MedianSmoothing(get_btc_usd_price().reshape(1, length)).smoothed_values,
+    #                       ana.reshape(1, length),
+    #                       save=True,
+    #                       no_show=True,
+    #                       fig_name="test_btc_median_smoothing_60")
+
+    # ==================================================================================
+    # ======================== For LSTM based recognition ==============================
+    # ==================================================================================
+
+    data = data.reshape(dps, 1, length)
+
+    encdec_obj = LSTMEncoderDecoderAnomalyDetection(dropout=0.2,
+                                                    series_size=1,
+                                                    feature_size=length,
+                                                    hidden_dimensions=10,
+                                                    depth=1,
+                                                    epochs=200,
+                                                    modified_output_size=length)
+
+    # Generate the random arrays and split to find mean and covariance matrices
+    validation_samples_length = 150
+    arr_test = data[-1 * validation_samples_length:].reshape(validation_samples_length, 1, length)
+    # btc_data = get_btc_usd_price().reshape(1, 1, length)
+
+    # Train the model and predict
+    model = encdec_obj.train_model(data)
+    pred = model.predict(x=arr_test).reshape(validation_samples_length, length)
+
+    # Fit the gaussian and predict
+    gaussian_fit = ModelMultiVariateGaussian(reconstruction_model=model)
+    gaussian_fit.fit(pred, arr_test.reshape(validation_samples_length, length))
+
+    # Dumping validation graphs
+    Plotting.anomaly_bars(arr_test.reshape(validation_samples_length, length),
+                          pred,
+                          gaussian_fit.validation_anomaly_scores.reshape(validation_samples_length, length),
+                          save=True,
+                          no_show=True,
+                          fig_name="complete_crypto_data/validation_10_dims")
 
     # ana = gaussian_fit.predict(actual=get_btc_usd_price().reshape(1, 1, length))
-
-    # Dumping test graphs
+    #
+    # # Dumping test graphs
     # Plotting.anomaly_bars(get_btc_usd_price().reshape(1, length),
     #                       model.predict(btc_data).reshape(1, length),
     #                       ana.reshape(1, length),

@@ -45,3 +45,14 @@ def get_btc_usd_price():
     d.fillna(method='bfill', inplace=True)
     d = d.values
     return (d-d.min())/(d.max()-d.min())
+
+
+def load_crypto_pairings_data():
+    d = pd.read_csv("data/crypto_pairings.csv").query("date >= '2018-01-01'")
+    df = d.dropna(axis=1, how='all')
+    col_count = df.isnull().sum().reset_index()
+    df = df[col_count[col_count[0] == 0]['index'].values]
+    df = df[df.columns.difference(['date'])]
+    df = ((df - df.min())/(df.max()-df.min())).values.T
+    dps_, length_ = np.shape(df)
+    return df, dps_, length_
