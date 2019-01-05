@@ -81,7 +81,8 @@ class LSTMEncoderDecoderAnomalyDetection(object):
                  depth=1,
                  epochs=10,
                  modified_output_size=None,
-                 dropout=0.3):
+                 dropout=0.3,
+                 plots=True):
         self.series_size = series_size
         self.feature_size = feature_size
         self.hidden_dimensions = hidden_dimensions
@@ -93,6 +94,7 @@ class LSTMEncoderDecoderAnomalyDetection(object):
         self.trained_model = None
         self._validation_data = None
         self._test_data = None
+        self.plotting = plots
 
     def build_model(self, **kwargs):
         return Seq2Seq(output_dim=self.feature_size if not kwargs else kwargs['output_size'],
@@ -125,29 +127,28 @@ class LSTMEncoderDecoderAnomalyDetection(object):
         self.trained_model = model_output_decoder_updated
         return model_output_decoder_updated
 
-    def fit_gaussian(self):
-        self.ModelingGaussian = ModelMultiVariateGaussian(reconstruction_model=self.trained_model)
+    def model_errors(self):
+        self.ModelingGaussian = ModelMultiVariateGaussian(reconstruction_model=self.trained_model,
+                                                          plotting=self.plotting)
         _validate_pred = model.predict(x=self._validation_data).reshape(self._validation_data.shape[0], length)
         self.ModelingGaussian.fit(_validate_pred,
                                   self._validation_data.reshape(self._validation_data.shape[0], length))
-        from pprint import pprint
-        pprint(self.ModelingGaussian.__dict__)
 
-    def predict_gaussian(self, test_data=None):
+    def predict_anomalies(self, test_data=None):
         if not test_data:
             return self.ModelingGaussian.predict(self._test_data)
         return self.ModelingGaussian.predict(test_data)
 
 
-
-
-class ModelMultiVariateGaussian(object):
-    def __init__(self, reconstruction_model=None):
+class ModelMultiVariateGaussian(Plotting):
+    def __init__(self, reconstruction_model=None, plotting=True):
         self.covariance = None
         self.mean_values = None
         self.validation_anomaly_scores = None
         self.reconstruction_model = reconstruction_model
         self.smoothed_values = None
+        self.plots_ = True
+        super().__init__()
 
     @staticmethod
     def estimate_errors(prediction, actual):
@@ -205,7 +206,17 @@ class ModelMultiVariateGaussian(object):
             raise ValueError("Unable to find the model to reconstruct time series")
         pred_ = self.reconstruction_model.predict(actual)
         errors = self.estimate_errors(pred_, actual)
-        return self.fit(errors=errors, mean_=self.mean_values, cov_=self.covariance)
+        anomaly_scores = self.fit(errors=errors, mean_=self.mean_values, cov_=self.covariance)
+
+        if not self.plots_:
+            return anomaly_scores
+        else:
+            self.anomaly_bars(actual=actual,
+                              prediction=pred_,
+                              anomaly_scores=anomaly_scores,
+                              save=True,
+                              no_show=True,
+                              fig_name="testing_delete/figure")
 
 
 class MedianSmoothing(ModelMultiVariateGaussian):
@@ -231,77 +242,52 @@ if __name__ == '__main__':
     data, dps, length = load_crypto_pairings_data()
 
     # ==================================================================================
-    # ======================== For Median smoothing thingy ==============================
-    # ==================================================================================
-
-    # x_train, x_validate = SplitData(x=data, split_ratios=(0.7,)).split_data()
-    # shape_x_validate = x_validate.shape[0]
-    #
-    # model_ = MedianSmoothing(data_=x_train)
-    # model_.fit(predict=None, actual=x_train)
-    #
-    # pred = model_.predict(actual=x_validate).reshape(shape_x_validate, length)
-    #
-    # # Dumping validation graphs
-    # Plotting.anomaly_bars(x_validate.reshape(shape_x_validate, length),
-    #                       MedianSmoothing(data_=x_validate).smoothed_values,
-    #                       pred,
-    #                       save=True,
-    #                       no_show=True,
-    #                       fig_name="median_smoothing_test_60")
-    #
-    # ana = model_.predict(get_btc_usd_price().reshape(1, length))
-    #
-    # Plotting.anomaly_bars(get_btc_usd_price().reshape(1, length),
-    #                       MedianSmoothing(get_btc_usd_price().reshape(1, length)).smoothed_values,
-    #                       ana.reshape(1, length),
-    #                       save=True,
-    #                       no_show=True,
-    #                       fig_name="test_btc_median_smoothing_60")
-
-    # ==================================================================================
     # ======================== For LSTM based recognition ==============================
     # ==================================================================================
 
     data = data.reshape(dps, 1, length)
-
     encdec_obj = LSTMEncoderDecoderAnomalyDetection(dropout=0.2,
                                                     series_size=1,
                                                     feature_size=length,
                                                     hidden_dimensions=10,
                                                     depth=1,
-                                                    epochs=2,
-                                                    modified_output_size=length)
+                                                    epochs=200,
+                                                    modified_output_size=length,
+                                                    plots=True)
 
-    # Generate the random arrays and split to find mean and covariance matrices
-    # validation_samples_length = 150
-    # arr_test = data[-1 * validation_samples_length:].reshape(validation_samples_length, 1, length)
-
-    # THIS ONE WOULD ME MOST LATEST; Method inheritance and chained methods
+    # THIS ONE WOULD ME MOST LATEST;
+    # Method inheritance and chained methods
     # Train the model and predict
     model = encdec_obj.train_model(data)
-    encdec_obj.fit_gaussian()
-    encdec_obj.predict_gaussian()
+    encdec_obj.model_errors()
+    encdec_obj.predict_anomalies()
 
-    # pred = model.predict(x=arr_test).reshape(validation_samples_length, length)
-    # Fit the gaussian and predict
-    # gaussian_fit = ModelMultiVariateGaussian(reconstruction_model=model)
-    # gaussian_fit.fit(pred, arr_test.reshape(validation_samples_length, length))
+    # ==================================================================================
+    # ======================== For Median smoothing thingy ==============================
+    # ==================================================================================
+
+    x_train, x_validate = SplitData(x=data, split_ratios=(0.7,)).split_data()
+    shape_x_validate = x_validate.shape[0]
+
+    model_ = MedianSmoothing(data_=x_train)
+    model_.fit(predict=None, actual=x_train)
+
+    pred = model_.predict(actual=x_validate).reshape(shape_x_validate, length)
 
     # Dumping validation graphs
-    # Plotting.anomaly_bars(arr_test.reshape(validation_samples_length, length),
-    #                       pred,
-    #                       gaussian_fit.validation_anomaly_scores.reshape(validation_samples_length, length),
-    #                       save=True,
-    #                       no_show=True,
-    #                       fig_name="complete_crypto_data/validation_10_dims")
+    Plotting.anomaly_bars(x_validate.reshape(shape_x_validate, length),
+                          MedianSmoothing(data_=x_validate).smoothed_values,
+                          pred,
+                          save=True,
+                          no_show=True,
+                          fig_name="median_smoothing_test_60")
 
-    # ana = gaussian_fit.predict(actual=get_btc_usd_price().reshape(1, 1, length))
-    #
-    # # Dumping test graphs
-    # Plotting.anomaly_bars(get_btc_usd_price().reshape(1, length),
-    #                       model.predict(btc_data).reshape(1, length),
-    #                       ana.reshape(1, length),
-    #                       save=True,
-    #                       no_show=True,
-    #                       fig_name="test_btc_10_dims")
+    ana = model_.predict(get_btc_usd_price().reshape(1, length))
+
+    Plotting.anomaly_bars(get_btc_usd_price().reshape(1, length),
+                          MedianSmoothing(get_btc_usd_price().reshape(1, length)).smoothed_values,
+                          ana.reshape(1, length),
+                          save=True,
+                          no_show=True,
+                          fig_name="test_btc_median_smoothing_60")
+

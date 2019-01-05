@@ -30,10 +30,13 @@ class Plotting(object):
 
         for i, (a, p, as_) in enumerate(zip(actual, prediction, anomaly_scores)):
             f, axarr = plt.subplots(2, sharex=True)
-            axarr[0].plot(a, label='actual')
-            axarr[0].plot(p, label='prediction')
+            a, p, as_ = np.squeeze(a), np.squeeze(p), np.squeeze(as_)
+            axarr[0].plot(np.squeeze(a), label='actual')
+            axarr[0].plot(np.squeeze(p), label='prediction')
             axarr[0].legend()
-            axarr[1].bar(x=range(0, len(a)), height=as_, label='anomaly score')
+            axarr[1].bar(x=range(0, len(a)),
+                         height=as_,
+                         label='anomaly score')
             axarr[1].legend()
             plt.legend(loc='lower right')
 
