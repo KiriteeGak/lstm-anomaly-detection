@@ -89,6 +89,10 @@ class LSTMEncoderDecoderAnomalyDetection(object):
         self.epochs = epochs
         self.modified_output_size = modified_output_size
         self.dropout = dropout
+        self.ModelingGaussian = ModelMultiVariateGaussian
+        self.trained_model = None
+        self._validation_data = None
+        self._test_data = None
 
     def build_model(self, **kwargs):
         return Seq2Seq(output_dim=self.feature_size if not kwargs else kwargs['output_size'],
@@ -103,6 +107,7 @@ class LSTMEncoderDecoderAnomalyDetection(object):
         _model = self.build_model()
         _model.compile(optimizer='adam', loss='mse', metrics=['mse'])
         x_train, x_validate, x_test = SplitData(x=x, split_ratios=(0.6, 0.3)).split_data()
+        self._test_data, self._validation_data = x_test, x_validate
         es = EarlyStopping(monitor='val_loss',
                            min_delta=0,
                            patience=10,
@@ -117,8 +122,23 @@ class LSTMEncoderDecoderAnomalyDetection(object):
 
         model_output_decoder_updated = self.build_model(output_size=self.modified_output_size)
         model_output_decoder_updated.set_weights(weights=_model.get_weights())
-
+        self.trained_model = model_output_decoder_updated
         return model_output_decoder_updated
+
+    def fit_gaussian(self):
+        self.ModelingGaussian = ModelMultiVariateGaussian(reconstruction_model=self.trained_model)
+        _validate_pred = model.predict(x=self._validation_data).reshape(self._validation_data.shape[0], length)
+        self.ModelingGaussian.fit(_validate_pred,
+                                  self._validation_data.reshape(self._validation_data.shape[0], length))
+        from pprint import pprint
+        pprint(self.ModelingGaussian.__dict__)
+
+    def predict_gaussian(self, test_data=None):
+        if not test_data:
+            return self.ModelingGaussian.predict(self._test_data)
+        return self.ModelingGaussian.predict(test_data)
+
+
 
 
 class ModelMultiVariateGaussian(object):
@@ -128,7 +148,6 @@ class ModelMultiVariateGaussian(object):
         self.validation_anomaly_scores = None
         self.reconstruction_model = reconstruction_model
         self.smoothed_values = None
-        self.GaussianFitter = ModelMultiVariateGaussian
 
     @staticmethod
     def estimate_errors(prediction, actual):
@@ -162,7 +181,7 @@ class ModelMultiVariateGaussian(object):
 
             errors, mean_, cov_ = self.export_mean_covariance(predict, actual, no_values, features)
         else:
-            features, no_values = errors.shape[-1], errors.shape[-2]
+            features, no_values = errors.shape[0], errors.shape[-1]
 
         if mahalanobis:
             # Check whether the implementation is right. Blocked till then.
@@ -179,12 +198,11 @@ class ModelMultiVariateGaussian(object):
             self.validation_anomaly_scores, self.mean_values, self.covariance =\
                 np.log(anomaly_score.reshape(1, no_values * features)), mean_, cov_
         else:
-            return np.log(anomaly_score.reshape(1, no_values * features))
+            return np.log(anomaly_score.reshape(features, 1, no_values))
 
     def predict(self, actual):
         if not self.reconstruction_model:
             raise ValueError("Unable to find the model to reconstruct time series")
-
         pred_ = self.reconstruction_model.predict(actual)
         errors = self.estimate_errors(pred_, actual)
         return self.fit(errors=errors, mean_=self.mean_values, cov_=self.covariance)
@@ -252,29 +270,31 @@ if __name__ == '__main__':
                                                     feature_size=length,
                                                     hidden_dimensions=10,
                                                     depth=1,
-                                                    epochs=200,
+                                                    epochs=2,
                                                     modified_output_size=length)
 
     # Generate the random arrays and split to find mean and covariance matrices
-    validation_samples_length = 150
-    arr_test = data[-1 * validation_samples_length:].reshape(validation_samples_length, 1, length)
-    # btc_data = get_btc_usd_price().reshape(1, 1, length)
+    # validation_samples_length = 150
+    # arr_test = data[-1 * validation_samples_length:].reshape(validation_samples_length, 1, length)
 
+    # THIS ONE WOULD ME MOST LATEST; Method inheritance and chained methods
     # Train the model and predict
     model = encdec_obj.train_model(data)
-    pred = model.predict(x=arr_test).reshape(validation_samples_length, length)
+    encdec_obj.fit_gaussian()
+    encdec_obj.predict_gaussian()
 
+    # pred = model.predict(x=arr_test).reshape(validation_samples_length, length)
     # Fit the gaussian and predict
-    gaussian_fit = ModelMultiVariateGaussian(reconstruction_model=model)
-    gaussian_fit.fit(pred, arr_test.reshape(validation_samples_length, length))
+    # gaussian_fit = ModelMultiVariateGaussian(reconstruction_model=model)
+    # gaussian_fit.fit(pred, arr_test.reshape(validation_samples_length, length))
 
     # Dumping validation graphs
-    Plotting.anomaly_bars(arr_test.reshape(validation_samples_length, length),
-                          pred,
-                          gaussian_fit.validation_anomaly_scores.reshape(validation_samples_length, length),
-                          save=True,
-                          no_show=True,
-                          fig_name="complete_crypto_data/validation_10_dims")
+    # Plotting.anomaly_bars(arr_test.reshape(validation_samples_length, length),
+    #                       pred,
+    #                       gaussian_fit.validation_anomaly_scores.reshape(validation_samples_length, length),
+    #                       save=True,
+    #                       no_show=True,
+    #                       fig_name="complete_crypto_data/validation_10_dims")
 
     # ana = gaussian_fit.predict(actual=get_btc_usd_price().reshape(1, 1, length))
     #
