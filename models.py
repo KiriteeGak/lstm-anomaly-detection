@@ -10,7 +10,7 @@ from seq2seq.models import Seq2Seq
 from scipy.signal import medfilt
 
 from build_data import SplitData, import_sample_data, get_btc_usd_price, load_crypto_pairings_data
-from plotting_ import Plotting
+from plotting import Plotting
 
 
 class SimpleLSTMAnomalyDetection(SplitData):
@@ -219,7 +219,7 @@ class ModelMultiVariateGaussian(Plotting):
                               fig_name="testing_delete/figure")
 
 
-class MedianSmoothing(ModelMultiVariateGaussian):
+class MedianSmoothing(ModelMultiVariateGaussian, Plotting):
     def __init__(self, data_, kernel_=59):
         super().__init__(reconstruction_model=None)
         self.data_ = data_
@@ -231,10 +231,16 @@ class MedianSmoothing(ModelMultiVariateGaussian):
             data_addn = self.data_
         return np.array([medfilt(arr, kernel_size=self.kernel_) for arr in data_addn])
 
-    def predict(self, actual):
+    def predict(self, actual, plots=True):
         smoothed = self._return_smoothed_curve(data_addn=actual)
         errors = self.estimate_errors(smoothed, actual)
-        return self.fit(errors=errors, mean_=self.mean_values, cov_=self.covariance)
+        if plots:
+            self.anomaly_bars(actual=actual,
+                              prediction=smoothed,
+                              anomaly_scores=self.fit(errors=errors, mean_=self.mean_values, cov_=self.covariance),
+                              save=True,
+                              no_show=True)
+            return self.fit(errors=errors, mean_=self.mean_values, cov_=self.covariance)
 
 
 if __name__ == '__main__':
@@ -255,9 +261,6 @@ if __name__ == '__main__':
                                                     modified_output_size=length,
                                                     plots=True)
 
-    # THIS ONE WOULD ME MOST LATEST;
-    # Method inheritance and chained methods
-    # Train the model and predict
     model = encdec_obj.train_model(data)
     encdec_obj.model_errors()
     encdec_obj.predict_anomalies()
@@ -269,25 +272,7 @@ if __name__ == '__main__':
     x_train, x_validate = SplitData(x=data, split_ratios=(0.7,)).split_data()
     shape_x_validate = x_validate.shape[0]
 
-    model_ = MedianSmoothing(data_=x_train)
+    model_ = MedianSmoothing(data_=x_train, kernel_=29)
     model_.fit(predict=None, actual=x_train)
 
-    pred = model_.predict(actual=x_validate).reshape(shape_x_validate, length)
-
-    # Dumping validation graphs
-    Plotting.anomaly_bars(x_validate.reshape(shape_x_validate, length),
-                          MedianSmoothing(data_=x_validate).smoothed_values,
-                          pred,
-                          save=True,
-                          no_show=True,
-                          fig_name="median_smoothing_test_60")
-
-    ana = model_.predict(get_btc_usd_price().reshape(1, length))
-
-    Plotting.anomaly_bars(get_btc_usd_price().reshape(1, length),
-                          MedianSmoothing(get_btc_usd_price().reshape(1, length)).smoothed_values,
-                          ana.reshape(1, length),
-                          save=True,
-                          no_show=True,
-                          fig_name="test_btc_median_smoothing_60")
-
+    pred = model_.predict(actual=x_validate, plots=True)
